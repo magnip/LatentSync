@@ -1,3 +1,4 @@
+import math
 # Adapted from https://github.com/guoyww/AnimateDiff/blob/main/animatediff/pipelines/pipeline_animation.py
 
 import inspect
