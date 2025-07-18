@@ -326,6 +326,11 @@ class LipsyncPipeline(DiffusionPipeline):
         faces, original_video_frames, boxes, affine_matrices = self.affine_transform_video(video_path)
         audio_samples = read_audio(audio_path)
 
+        # Debug: Print input durations
+        video_duration = len(original_video_frames) / video_fps
+        audio_duration = len(audio_samples) / audio_sample_rate
+        print(f"Input video duration: {video_duration:.2f}s, Audio duration: {audio_duration:.2f}s")
+
         # 1. Default height and width to unet
         height = height or self.unet.config.sample_size * self.vae_scale_factor
         width = width or self.unet.config.sample_size * self.vae_scale_factor
@@ -350,10 +355,12 @@ class LipsyncPipeline(DiffusionPipeline):
         if self.unet.add_audio_layer:
             whisper_feature = self.audio_encoder.audio2feat(audio_path)
             whisper_chunks = self.audio_encoder.feature2chunks(feature_array=whisper_feature, fps=video_fps)
-
             num_inferences = min(len(faces), len(whisper_chunks)) // num_frames
         else:
             num_inferences = len(faces) // num_frames
+
+        # Debug: Print inference parameters
+        print(f"Number of faces: {len(faces)}, Whisper chunks: {len(whisper_chunks) if self.unet.add_audio_layer else 'N/A'}, Num inferences: {num_inferences}")
 
         synced_video_frames = []
         masked_video_frames = []
@@ -361,6 +368,10 @@ class LipsyncPipeline(DiffusionPipeline):
         num_channels_latents = self.vae.config.latent_channels
 
         # Prepare latent variables
+        if num_inferences <= 0:
+            print("Warning: No inferences to perform. Check face detection or audio features.")
+            return
+
         all_latents = self.prepare_latents(
             batch_size,
             num_frames * num_inferences,
@@ -376,6 +387,9 @@ class LipsyncPipeline(DiffusionPipeline):
             for i in range(num_inferences):
                 if self.unet.add_audio_layer:
                     audio_embeds = torch.stack(whisper_chunks[i * num_frames : (i + 1) * num_frames])
+                    if audio_embeds.shape[0] != num_frames:
+                        print(f"Warning: Skipping batch {i} due to insufficient audio frames: {audio_embeds.shape[0]}")
+                        continue
                     audio_embeds = audio_embeds.to(device, dtype=weight_dtype)
                     if do_classifier_free_guidance:
                         null_audio_embeds = torch.zeros_like(audio_embeds)
@@ -384,6 +398,15 @@ class LipsyncPipeline(DiffusionPipeline):
                     audio_embeds = None
                 
                 inference_faces = faces[i * num_frames : (i + 1) * num_frames]
+                if inference_faces.shape[0] != num_frames:
+                    print(f"Warning: Skipping batch {i} due to insufficient video frames: {inference_faces.shape[0]}")
+                    continue
+
+                latents = all_latents[:, :, i * num_frames : (i + 1) * num_frames]
+                if latents.shape[2] != num_frames:
+                    print(f"Warning: Skipping batch {i} due to insufficient latents: {latents.shape[2]}")
+                    continue
+
                 pixel_values, masked_pixel_values, masks = self.image_processor.prepare_masks_and_masked_images(
                     inference_faces, affine_transform=False
                 )
@@ -448,6 +471,10 @@ class LipsyncPipeline(DiffusionPipeline):
         
                 pbar.update(1)  # Update the overall inference progress bar
 
+        if not synced_video_frames:
+            print("Error: No video frames generated. Check face detection or audio processing.")
+            return
+
         synced_video_frames = self.restore_video(
             torch.cat(synced_video_frames), original_video_frames, boxes, affine_matrices
         )
@@ -460,6 +487,10 @@ class LipsyncPipeline(DiffusionPipeline):
             audio_samples = torch.cat([audio_samples, padding]).cpu().numpy()
         else:
             audio_samples = audio_samples[:audio_samples_remain_length].cpu().numpy()
+
+        # Debug: Print output durations
+        print(f"Output video frames: {synced_video_frames.shape[0]}, Duration: {video_length:.2f}s")
+        print(f"Output audio samples: {audio_samples.shape[0]}, Duration: {audio_samples.shape[0] / audio_sample_rate:.2f}s")
 
         if is_train:
             self.unet.train()
