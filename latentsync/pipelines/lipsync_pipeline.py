@@ -390,10 +390,9 @@ class LipsyncPipeline(DiffusionPipeline):
 
         
 
-        num_inferences = math.ceil(len(whisper_chunks) / num_frames)
+
         with tqdm.tqdm(total=num_inferences, desc="Doing inference...", unit="batch") as pbar:
-            final_off = False  # Prevent final frame cut-off
-for i in range(num_inferences):
+            for i in range(num_inferences):
                 if self.unet.add_audio_layer:
                     audio_embeds = torch.stack(whisper_chunks[i * num_frames : (i + 1) * num_frames])
                     audio_embeds = audio_embeds.to(device, dtype=weight_dtype)
