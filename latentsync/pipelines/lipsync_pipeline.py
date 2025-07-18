@@ -1,4 +1,3 @@
-import math
 # Adapted from https://github.com/guoyww/AnimateDiff/blob/main/animatediff/pipelines/pipeline_animation.py
 
 import inspect
@@ -264,7 +263,6 @@ class LipsyncPipeline(DiffusionPipeline):
 
     def affine_transform_video(self, video_path):
         video_frames = read_video(video_path, change_fps=False, use_decord=True)
-video_frames = self.loop_video(whisper_chunks, video_frames)
         faces, boxes, affine_matrices = [], [], []
         skipped_frames = []
     
@@ -292,18 +290,7 @@ video_frames = self.loop_video(whisper_chunks, video_frames)
 
 
     def restore_video(self, faces, video_frames, boxes, affine_matrices):
-
-    def loop_video(self, whisper_chunks: list, video_frames: np.ndarray):
-        """
-        If the number of audio chunks is greater than video frames, loop video to match.
-        """
-        if len(whisper_chunks) > len(video_frames):
-            looped_frames = []
-            for i in range(len(whisper_chunks)):
-                looped_frames.append(video_frames[i % len(video_frames)])
-            return np.stack(looped_frames, axis=0)
-        return video_frames
-        video_frames = video_frames[: len(faces)]
+        video_frames = video_frames[: faces.shape[0]]
         out_frames = []
         print(f"Restoring {len(faces)} faces...")
         for index, face in enumerate(faces):
