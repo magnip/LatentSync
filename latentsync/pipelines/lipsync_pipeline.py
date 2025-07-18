@@ -264,6 +264,7 @@ class LipsyncPipeline(DiffusionPipeline):
 
     def affine_transform_video(self, video_path):
         video_frames = read_video(video_path, change_fps=False, use_decord=True)
+video_frames = self.loop_video(whisper_chunks, video_frames)
         faces, boxes, affine_matrices = [], [], []
         skipped_frames = []
     
@@ -291,7 +292,18 @@ class LipsyncPipeline(DiffusionPipeline):
 
 
     def restore_video(self, faces, video_frames, boxes, affine_matrices):
-        video_frames = video_frames[: faces.shape[0]]
+
+    def loop_video(self, whisper_chunks: list, video_frames: np.ndarray):
+        """
+        If the number of audio chunks is greater than video frames, loop video to match.
+        """
+        if len(whisper_chunks) > len(video_frames):
+            looped_frames = []
+            for i in range(len(whisper_chunks)):
+                looped_frames.append(video_frames[i % len(video_frames)])
+            return np.stack(looped_frames, axis=0)
+        return video_frames
+        video_frames = video_frames[: len(faces)]
         out_frames = []
         print(f"Restoring {len(faces)} faces...")
         for index, face in enumerate(faces):
@@ -368,7 +380,9 @@ class LipsyncPipeline(DiffusionPipeline):
             whisper_feature = self.audio_encoder.audio2feat(audio_path)
             whisper_chunks = self.audio_encoder.feature2chunks(feature_array=whisper_feature, fps=video_fps)
 
-            video_frames, faces, boxes, affine_matrices = self.loop_video(whisper_chunks, video_frames)
+            num_inferences = min(len(faces), len(whisper_chunks)) // num_frames
+        else:
+            num_inferences = len(faces) // num_frames
 
         synced_video_frames = []
         masked_video_frames = []
@@ -378,7 +392,7 @@ class LipsyncPipeline(DiffusionPipeline):
         # Prepare latent variables
         all_latents = self.prepare_latents(
             batch_size,
-             len(whisper_chunks),
+            num_frames * num_inferences,
             num_channels_latents,
             height,
             width,
@@ -386,8 +400,6 @@ class LipsyncPipeline(DiffusionPipeline):
             device,
             generator,
         )
-
-        num_inferences = math.ceil(len(whisper_chunks) / num_frames)
 
         
 
