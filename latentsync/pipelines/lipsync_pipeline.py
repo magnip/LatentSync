@@ -390,7 +390,7 @@ class LipsyncPipeline(DiffusionPipeline):
 
         
 
-
+        num_inferences = math.ceil(len(whisper_chunks) / num_frames)
         with tqdm.tqdm(total=num_inferences, desc="Doing inference...", unit="batch") as pbar:
             for i in range(num_inferences):
                 if self.unet.add_audio_layer:
