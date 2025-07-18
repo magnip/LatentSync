@@ -380,7 +380,7 @@ class LipsyncPipeline(DiffusionPipeline):
         # Prepare latent variables
         all_latents = self.prepare_latents(
             batch_size,
-            num_frames * num_inferences,
+             len(whisper_chunks),
             num_channels_latents,
             height,
             width,
@@ -388,6 +388,8 @@ class LipsyncPipeline(DiffusionPipeline):
             device,
             generator,
         )
+
+        num_inferences = math.ceil(len(whisper_chunks) / num_frames)
 
         
 
