@@ -295,7 +295,7 @@ class LipsyncPipeline(DiffusionPipeline):
         print(f"Restoring {len(faces)} faces...")
         for index, face in enumerate(faces):
             def loop_video(self, whisper_chunks: list, video_frames: np.ndarray):
-            x1, y1, x2, y2 = boxes[index]
+           
             height = int(y2 - y1)
             width = int(x2 - x1)
             face = torchvision.transforms.functional.resize(face, size=(height, width), antialias=True)
