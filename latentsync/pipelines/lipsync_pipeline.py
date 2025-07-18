@@ -368,9 +368,7 @@ class LipsyncPipeline(DiffusionPipeline):
             whisper_feature = self.audio_encoder.audio2feat(audio_path)
             whisper_chunks = self.audio_encoder.feature2chunks(feature_array=whisper_feature, fps=video_fps)
 
-            num_inferences = min(len(faces), len(whisper_chunks)) // num_frames
-        else:
-            num_inferences = len(faces) // num_frames
+            video_frames, faces, boxes, affine_matrices = self.loop_video(whisper_chunks, video_frames)
 
         synced_video_frames = []
         masked_video_frames = []
