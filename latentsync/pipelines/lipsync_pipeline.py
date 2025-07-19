@@ -375,6 +375,11 @@ class LipsyncPipeline(DiffusionPipeline):
 
         synced_video_frames = []
         masked_video_frames = []
+         for i in tqdm.tqdm(range(num_inferences), desc="Doing inference..."):
+            # Calculate the actual number of frames for this chunk
+            start_idx = i * num_frames
+            end_idx = min(start_idx + num_frames, total_frames)
+            chunk_size = end_idx - start_idx
 
         num_channels_latents = self.vae.config.latent_channels
 
