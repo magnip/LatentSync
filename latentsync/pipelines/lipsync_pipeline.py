@@ -337,17 +337,17 @@ class LipsyncPipeline(DiffusionPipeline):
             print("Error: No inferences to perform. Check face detection or audio features.")
             return
 
-        print("\n[3/5] Encoding video frames to latent space...")
-        latent_start = time.time()
-        all_latents = self.prepare_latents(
-            1,
-            total_frames,
-            num_channels_latents,
-            height,
-            width,
-            weight_dtype,
-            self._execution_device,
-            generator,
+        if self.unet.add_audio_layer:
+    whisper_feature = self.audio_encoder.audio2feat(audio_path)
+    whisper_chunks = self.audio_encoder.feature2chunks(feature_array=whisper_feature, fps=video_fps)
+    total_frames = len(faces)  # Force to match video frames (239)
+    print(f"Initial whisper chunks: {len(whisper_chunks)}, Expected: {total_frames}")
+    if len(whisper_chunks) < total_frames:
+        print(f"Padding {total_frames - len(whisper_chunks)} audio chunks to match {total_frames} faces")
+        padding = [torch.zeros_like(whisper_chunks[0]) for _ in range(total_frames - len(whisper_chunks))]
+        whisper_chunks.extend(padding)
+else:
+    total_frames = len(faces)
         )
         all_latents = all_latents * self.scheduler.init_noise_sigma
         latent_time = time.time() - latent_start
