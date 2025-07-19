@@ -346,8 +346,6 @@ class LipsyncPipeline(DiffusionPipeline):
         print(f"Padding {total_frames - len(whisper_chunks)} audio chunks to match {total_frames} faces")
         padding = [torch.zeros_like(whisper_chunks[0]) for _ in range(total_frames - len(whisper_chunks))]
         whisper_chunks.extend(padding)
-else:
-    total_frames = len(faces)
         )
         all_latents = all_latents * self.scheduler.init_noise_sigma
         latent_time = time.time() - latent_start
