@@ -5,7 +5,6 @@ import os
 import shutil
 from typing import Callable, List, Optional, Union
 import subprocess
-import tempfile
 
 import numpy as np
 import torch
@@ -156,11 +155,17 @@ class LipsyncPipeline(DiffusionPipeline):
         return decoded_latents
 
     def prepare_extra_step_kwargs(self, generator, eta):
+        # prepare extra kwargs for the scheduler step, since not all schedulers have the same signature
+        # eta (η) is only used with the DDIMScheduler, it will be ignored for other schedulers.
+        # eta corresponds to η in DDIM paper: https://arxiv.org/abs/2010.02502
+        # and should be between [0, 1]
+
         accepts_eta = "eta" in set(inspect.signature(self.scheduler.step).parameters.keys())
         extra_step_kwargs = {}
         if accepts_eta:
             extra_step_kwargs["eta"] = eta
 
+        # check if the scheduler accepts generator
         accepts_generator = "generator" in set(inspect.signature(self.scheduler.step).parameters.keys())
         if accepts_generator:
             extra_step_kwargs["generator"] = generator
@@ -192,23 +197,30 @@ class LipsyncPipeline(DiffusionPipeline):
         latents = torch.randn(shape, generator=generator, device=rand_device, dtype=dtype).to(device)
         latents = latents.repeat(1, 1, num_frames, 1, 1)
 
+        # scale the initial noise by the standard deviation required by the scheduler
         latents = latents * self.scheduler.init_noise_sigma
         return latents
 
     def prepare_mask_latents(
         self, mask, masked_image, height, width, dtype, device, generator, do_classifier_free_guidance
     ):
+        # resize the mask to latents shape as we concatenate the mask to the latents
+        # we do that before converting to dtype to avoid breaking in case we're using cpu_offload
+        # and half precision
         mask = torch.nn.functional.interpolate(
             mask, size=(height // self.vae_scale_factor, width // self.vae_scale_factor)
         )
         masked_image = masked_image.to(device=device, dtype=dtype)
 
+        # encode the mask image into latents space so we can concatenate it to the latents
         masked_image_latents = self.vae.encode(masked_image).latent_dist.sample(generator=generator)
         masked_image_latents = (masked_image_latents - self.vae.config.shift_factor) * self.vae.config.scaling_factor
 
+        # aligning device to prevent device errors when concating it with the latent model input
         masked_image_latents = masked_image_latents.to(device=device, dtype=dtype)
         mask = mask.to(device=device, dtype=dtype)
 
+        # assume batch size = 1
         mask = rearrange(mask, "f c h w -> 1 c f h w")
         masked_image_latents = rearrange(masked_image_latents, "f c h w -> 1 c f h w")
 
@@ -234,6 +246,7 @@ class LipsyncPipeline(DiffusionPipeline):
 
     @staticmethod
     def paste_surrounding_pixels_back(decoded_latents, pixel_values, masks, device, weight_dtype):
+        # Paste the surrounding pixels back, because we only want to change the mouth region
         pixel_values = pixel_values.to(device=device, dtype=weight_dtype)
         masks = masks.to(device=device, dtype=weight_dtype)
         combined_pixel_values = decoded_latents * masks + pixel_values * (1 - masks)
@@ -247,38 +260,34 @@ class LipsyncPipeline(DiffusionPipeline):
         images = images.cpu().numpy()
         return images
 
+
     def affine_transform_video(self, video_path):
         video_frames = read_video(video_path, change_fps=False, use_decord=True)
         faces, boxes, affine_matrices = [], [], []
         skipped_frames = []
-
+    
         print(f"Transforming {len(video_frames)} faces...")
-
+    
         for i, frame in enumerate(video_frames):
             face, box, affine_matrix = self.image_processor.affine_transform(frame)
             if face is None:
-                # Retain original frame when face detection fails
-                print(f"Warning: No face detected in frame {i}, retaining original frame")
-                # Convert frame to tensor in the same format as face (HWC -> CHW)
-                face = torch.from_numpy(frame).permute(2, 0, 1).float() / 255.0
-                face = (face * 2 - 1).clamp(-1, 1)  # Normalize to [-1, 1] like processed faces
-                box = [0, 0, frame.shape[1], frame.shape[0]]  # Use full frame as box
-                affine_matrix = torch.eye(3)  # Identity matrix (no transformation)
                 skipped_frames.append(i)
+                continue
             faces.append(face)
             boxes.append(box)
             affine_matrices.append(affine_matrix)
-
+    
         if skipped_frames:
-            print(f"Warning: Retained {len(skipped_frames)} frames without face detection: {skipped_frames}")
-
+            print(f"Warning: Skipped {len(skipped_frames)} frames due to face detection failure: {skipped_frames}")
+    
         if faces:
             faces = torch.stack(faces)
         else:
-            print("Error: No valid faces detected in any frame. Returning empty tensors.")
+            print("Error: No faces detected in any frame. Returning empty tensors.")
             faces = torch.empty((0,))
-
+        
         return faces, video_frames, boxes, affine_matrices
+
 
     def restore_video(self, faces, video_frames, boxes, affine_matrices):
         video_frames = video_frames[: faces.shape[0]]
@@ -288,18 +297,14 @@ class LipsyncPipeline(DiffusionPipeline):
             x1, y1, x2, y2 = boxes[index]
             height = int(y2 - y1)
             width = int(x2 - x1)
-            if width == video_frames[index].shape[1] and height == video_frames[index].shape[0]:
-                # Frame was retained without face detection, use original frame
-                out_frame = video_frames[index]
-            else:
-                # Resize and restore face as normal
-                face = torchvision.transforms.functional.resize(face, size=(height, width), antialias=True)
-                face = rearrange(face, "c h w -> h w c")
-                face = (face / 2 + 0.5).clamp(0, 1)
-                face = (face * 255).to(torch.uint8).cpu().numpy()
-                out_frame = self.image_processor.restorer.restore_img(video_frames[index], face, affine_matrices[index])
+            face = torchvision.transforms.functional.resize(face, size=(height, width), antialias=True)
+            face = rearrange(face, "c h w -> h w c")
+            face = (face / 2 + 0.5).clamp(0, 1)
+            face = (face * 255).to(torch.uint8).cpu().numpy()
+            out_frame = self.image_processor.restorer.restore_img(video_frames[index], face, affine_matrices[index])
             out_frames.append(out_frame)
         return np.stack(out_frames, axis=0)
+
 
     @torch.no_grad()
     def __call__(
@@ -337,11 +342,6 @@ class LipsyncPipeline(DiffusionPipeline):
         faces, original_video_frames, boxes, affine_matrices = self.affine_transform_video(video_path)
         audio_samples = read_audio(audio_path)
 
-        # Debug: Print input durations
-        video_duration = len(original_video_frames) / video_fps
-        audio_duration = len(audio_samples) / audio_sample_rate
-        print(f"Input video duration: {video_duration:.2f}s, Audio duration: {audio_duration:.2f}s")
-
         # 1. Default height and width to unet
         height = height or self.unet.config.sample_size * self.vae_scale_factor
         width = width or self.unet.config.sample_size * self.vae_scale_factor
@@ -366,28 +366,17 @@ class LipsyncPipeline(DiffusionPipeline):
         if self.unet.add_audio_layer:
             whisper_feature = self.audio_encoder.audio2feat(audio_path)
             whisper_chunks = self.audio_encoder.feature2chunks(feature_array=whisper_feature, fps=video_fps)
+
             num_inferences = min(len(faces), len(whisper_chunks)) // num_frames
         else:
             num_inferences = len(faces) // num_frames
 
-        # Debug: Print inference parameters
-        print(f"Number of faces: {len(faces)}, Whisper chunks: {len(whisper_chunks) if self.unet.add_audio_layer else 'N/A'}, Num inferences: {num_inferences}")
-
         synced_video_frames = []
         masked_video_frames = []
-         for i in tqdm.tqdm(range(num_inferences), desc="Doing inference..."):
-            # Calculate the actual number of frames for this chunk
-            start_idx = i * num_frames
-            end_idx = min(start_idx + num_frames, total_frames)
-            chunk_size = end_idx - start_idx
 
         num_channels_latents = self.vae.config.latent_channels
 
         # Prepare latent variables
-        if num_inferences <= 0:
-            print("Warning: No inferences to perform. Check face detection or audio features.")
-            return
-
         all_latents = self.prepare_latents(
             batch_size,
             num_frames * num_inferences,
@@ -399,13 +388,13 @@ class LipsyncPipeline(DiffusionPipeline):
             generator,
         )
 
+        
+
+
         with tqdm.tqdm(total=num_inferences, desc="Doing inference...", unit="batch") as pbar:
             for i in range(num_inferences):
                 if self.unet.add_audio_layer:
                     audio_embeds = torch.stack(whisper_chunks[i * num_frames : (i + 1) * num_frames])
-                    if audio_embeds.shape[0] != num_frames:
-                        print(f"Warning: Skipping batch {i} due to insufficient audio frames: {audio_embeds.shape[0]}")
-                        continue
                     audio_embeds = audio_embeds.to(device, dtype=weight_dtype)
                     if do_classifier_free_guidance:
                         null_audio_embeds = torch.zeros_like(audio_embeds)
@@ -414,15 +403,7 @@ class LipsyncPipeline(DiffusionPipeline):
                     audio_embeds = None
                 
                 inference_faces = faces[i * num_frames : (i + 1) * num_frames]
-                if inference_faces.shape[0] != num_frames:
-                    print(f"Warning: Skipping batch {i} due to insufficient video frames: {inference_faces.shape[0]}")
-                    continue
-
                 latents = all_latents[:, :, i * num_frames : (i + 1) * num_frames]
-                if latents.shape[2] != num_frames:
-                    print(f"Warning: Skipping batch {i} due to insufficient latents: {latents.shape[2]}")
-                    continue
-
                 pixel_values, masked_pixel_values, masks = self.image_processor.prepare_masks_and_masked_images(
                     inference_faces, affine_transform=False
                 )
@@ -487,39 +468,29 @@ class LipsyncPipeline(DiffusionPipeline):
         
                 pbar.update(1)  # Update the overall inference progress bar
 
-        if not synced_video_frames:
-            print("Error: No video frames generated. Check face detection or audio processing.")
-            return
 
         synced_video_frames = self.restore_video(
             torch.cat(synced_video_frames), original_video_frames, boxes, affine_matrices
         )
+        # masked_video_frames = self.restore_video(
+        #     torch.cat(masked_video_frames), original_video_frames, boxes, affine_matrices
+        # )
 
-        # Audio padding/truncation
-        video_length = synced_video_frames.shape[0] / video_fps
-        audio_samples_remain_length = int(video_length * audio_sample_rate)
-        if audio_samples.shape[0] < audio_samples_remain_length:
-            padding = torch.zeros(audio_samples_remain_length - audio_samples.shape[0], device=audio_samples.device)
-            audio_samples = torch.cat([audio_samples, padding]).cpu().numpy()
-        else:
-            audio_samples = audio_samples[:audio_samples_remain_length].cpu().numpy()
-
-        # Debug: Print output durations
-        print(f"Output video frames: {synced_video_frames.shape[0]}, Duration: {video_length:.2f}s")
-        print(f"Output audio samples: {audio_samples.shape[0]}, Duration: {audio_samples.shape[0] / audio_sample_rate:.2f}s")
+        audio_samples_remain_length = int(synced_video_frames.shape[0] / video_fps * audio_sample_rate)
+        audio_samples = audio_samples[:audio_samples_remain_length].cpu().numpy()
 
         if is_train:
             self.unet.train()
 
-        with tempfile.TemporaryDirectory() as temp_dir:
-            write_video(os.path.join(temp_dir, "video.mp4"), synced_video_frames, fps=video_fps)
-            sf.write(os.path.join(temp_dir, "audio.wav"), audio_samples, audio_sample_rate)
+        temp_dir = "temp"
+        if os.path.exists(temp_dir):
+            shutil.rmtree(temp_dir)
+        os.makedirs(temp_dir, exist_ok=True)
 
-            command = [
-                "ffmpeg", "-y", "-loglevel", "error", "-nostdin",
-                "-i", os.path.join(temp_dir, "video.mp4"),
-                "-i", os.path.join(temp_dir, "audio.wav"),
-                "-c:v", "libx264", "-c:a", "aac", "-q:v", "0", "-q:a", "0",
-                video_out_path
-            ]
-            subprocess.run(command, check=True)
+        write_video(os.path.join(temp_dir, "video.mp4"), synced_video_frames, fps=25)
+        # write_video(video_mask_path, masked_video_frames, fps=25)
+
+        sf.write(os.path.join(temp_dir, "audio.wav"), audio_samples, audio_sample_rate)
+
+        command = f"ffmpeg -y -loglevel error -nostdin -i {os.path.join(temp_dir, 'video.mp4')} -i {os.path.join(temp_dir, 'audio.wav')} -c:v libx264 -c:a aac -q:v 0 -q:a 0 {video_out_path}"
+        subprocess.run(command, shell=True)
