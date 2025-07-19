@@ -392,16 +392,18 @@ class LipsyncPipeline(DiffusionPipeline):
         
 
 
-        with tqdm.tqdm(total=num_inferences, desc="Doing inference...", unit="batch") as pbar:
-            for i in range(num_inferences):
-                if self.unet.add_audio_layer:
-                    audio_embeds = torch.stack(whisper_chunks[i * num_frames : (i + 1) * num_frames])
-                    audio_embeds = audio_embeds.to(device, dtype=weight_dtype)
-                    if do_classifier_free_guidance:
-                        null_audio_embeds = torch.zeros_like(audio_embeds)
-                        audio_embeds = torch.cat([null_audio_embeds, audio_embeds])
-                else:
-                    audio_embeds = None
+        if self.unet.add_audio_layer:
+    whisper_feature = self.audio_encoder.audio2feat(audio_path)
+    whisper_chunks = self.audio_encoder.feature2chunks(feature_array=whisper_feature, fps=video_fps)
+    total_frames = len(faces)  # Force to match video frames (239)
+    print(f"Initial whisper chunks: {len(whisper_chunks)}, Expected: {total_frames}")
+    if len(whisper_chunks) < total_frames:
+        print(f"Padding {total_frames - len(whisper_chunks)} audio chunks to match {total_frames} faces")
+        padding = [torch.zeros_like(whisper_chunks[0]) for _ in range(total_frames - len(whisper_chunks))]
+        whisper_chunks.extend(padding)
+else:
+    total_frames = len(faces)
+)
                 
                 inference_faces = faces[i * num_frames : (i + 1) * num_frames]
                 latents = all_latents[:, :, i * num_frames : (i + 1) * num_frames]
