@@ -513,4 +513,4 @@ class LipsyncPipeline(DiffusionPipeline):
         total_time = time.time() - overall_start_time
         print("\n" + "="*80)
         print(f"LatentSync pipeline completed in {total_time:.2f} seconds")
-        print("="*80)`
+    
